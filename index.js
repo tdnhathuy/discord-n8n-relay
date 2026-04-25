@@ -235,13 +235,21 @@ async function main() {
         targetLang
       });
 
-      const reply = await callOpenAI(payload, targetLang);
-      if (!reply) {
+      const startTime = Date.now();
+      const replyText = await callOpenAI(payload, targetLang);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      
+      if (!replyText) {
         log('warn', 'OpenAI returned empty reply', { messageId: message.id });
         return;
       }
 
-      await sendReply(message, reply);
+      const formattedReply = `**🌍 Auto ➔ ${targetLang.toUpperCase()}** | 🤖 \`${env.openaiModel}\` | ⏱️ \`${duration}s\`
+\`\`\`text
+${replyText}
+\`\`\``;
+
+      await sendReply(message, formattedReply);
     } catch (error) {
       log('error', 'Failed to process Discord message', error.message || String(error));
       try {

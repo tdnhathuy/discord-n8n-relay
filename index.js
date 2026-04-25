@@ -141,7 +141,7 @@ async function callOpenAI(payload, targetLang) {
         { role: 'system', content: prompt },
         { role: 'user', content: payload.content }
       ],
-      temperature: 0.2,
+      temperature: 0,
       max_tokens: 500,
       stream: false,
     }),

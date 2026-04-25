@@ -11,7 +11,6 @@ const env = {
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 20000),
   port: Number(process.env.PORT || 3000),
   allowedChannelId: process.env.ALLOWED_CHANNEL_ID || '',
-  triggerPrefix: process.env.TRIGGER_PREFIX ?? 'tr ',
   replyMode: (process.env.REPLY_MODE || 'reply').toLowerCase(),
   logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
 };
@@ -40,13 +39,19 @@ function shouldProcess(message) {
   if (message.author?.bot) return false;
   if (!message.content?.trim()) return false;
   if (env.allowedChannelId && message.channelId !== env.allowedChannelId) return false;
-  if (env.triggerPrefix && !message.content.startsWith(env.triggerPrefix)) return false;
   return true;
 }
 
-function buildPromptContent(message) {
-  if (!env.triggerPrefix) return message.content.trim();
-  return message.content.slice(env.triggerPrefix.length).trim();
+function parseMessage(content) {
+  const text = content.trim();
+  if (text.toLowerCase().startsWith('vi ')) {
+    return { targetLang: 'vi', textToProcess: text.slice(3).trim() };
+  }
+  if (text.toLowerCase().startsWith('en ')) {
+    return { targetLang: 'en', textToProcess: text.slice(3).trim() };
+  }
+  // Mặc định dịch sang tiếng Anh nếu không có prefix
+  return { targetLang: 'en', textToProcess: text }; 
 }
 
 async function getReplyReference(message) {
@@ -68,30 +73,36 @@ async function getReplyReference(message) {
   }
 }
 
-function buildGeminiPrompt({ content, username, replyToText }) {
+function buildOpenAIPrompt({ content, username, replyToText, targetLang }) {
+  const rules = targetLang === 'vi'
+    ? [
+        '- Target language: Vietnamese.',
+        '- Translate the input text into natural Vietnamese.',
+        '- If the input is already Vietnamese, improve it to sound more natural and correct any spelling/grammar errors, suitable for a daily work chat among Vietnamese developers.',
+      ]
+    : [
+        '- Target language: English.',
+        '- Translate the input text into professional, natural English.',
+        '- If the input is already English (broken or not), correct the grammar and rewrite it to sound natural and native.',
+        '- Keep it concise, suitable for chatting with a PM, PO, designer, or teammate.',
+        '- Do not use contractions.',
+      ];
+
   return [
     'You are a professional bilingual writing assistant for software and product communication.',
     '',
-    'Your task is to rewrite short Discord messages for a Vietnamese software developer.',
-    '',
     'Rules:',
-    '- Detect language automatically.',
-    '- If the input is Vietnamese: rewrite it into natural, concise, professional English for chatting with a PM, PO, designer, or teammate.',
-    '- If the input is English: translate it into natural Vietnamese used by Vietnamese developers in daily work chat.',
+    ...rules,
     '- Output only the final message.',
-    '- No explanations, no notes, no quotes, no markdown.',
+    '- No explanations, no notes, no quotes, no markdown wrappers unless formatting code.',
     '- Preserve intent, urgency, and speaker perspective exactly.',
     '- Keep technical terms natural and unchanged when appropriate: API, UI, endpoint, PR, bug, staging, production, payload, response, config.',
     '- Preserve identifiers, code, paths, URLs, emails, commands, and error text exactly when present.',
-    '- When output is English, do not use contractions.',
     '- Do not add greetings or sign-offs unless they already exist in the source.',
     '',
     'Optional context:',
     `reply_to: ${replyToText || ''}`,
     `username: ${username || ''}`,
-    '',
-    'User message:',
-    content,
   ].join('\n');
 }
 
@@ -105,16 +116,16 @@ function extractOpenAIText(data) {
 
   const finishReason = data?.choices?.[0]?.finish_reason;
   
-  // Debug raw response if choices is empty
   const rawDebug = JSON.stringify(data).slice(0, 300);
   throw new Error(`OpenAI API returned no text. finish_reason=${finishReason || 'unknown'}. Raw: ${rawDebug}`);
 }
 
-async function callOpenAI(payload) {
-  const prompt = buildGeminiPrompt({
+async function callOpenAI(payload, targetLang) {
+  const prompt = buildOpenAIPrompt({
     content: payload.content,
     username: payload.author?.username || '',
     replyToText: payload.replyTo?.content || '',
+    targetLang
   });
 
   const url = `${env.openaiApiBaseUrl.replace(/\/$/, '')}/chat/completions`;
@@ -131,7 +142,7 @@ async function callOpenAI(payload) {
         { role: 'user', content: payload.content }
       ],
       temperature: 0.2,
-      max_tokens: 220,
+      max_tokens: 500,
       stream: false,
     }),
     signal: AbortSignal.timeout(env.requestTimeoutMs),
@@ -195,12 +206,12 @@ async function main() {
     try {
       if (!shouldProcess(message)) return;
 
-      const content = buildPromptContent(message);
-      if (!content) return;
+      const { targetLang, textToProcess } = parseMessage(message.content);
+      if (!textToProcess) return;
 
       const replyTo = await getReplyReference(message);
       const payload = {
-        content,
+        content: textToProcess,
         channelId: message.channelId,
         threadId: message.channel?.isThread?.() ? message.channel.id : '',
         messageId: message.id,
@@ -217,13 +228,14 @@ async function main() {
         },
       };
 
-      log('info', 'Processing Discord message with 9Router/OpenAI', {
+      log('info', `Processing Discord message (${targetLang}) with 9Router/OpenAI`, {
         messageId: message.id,
         channelId: message.channelId,
         model: env.openaiModel,
+        targetLang
       });
 
-      const reply = await callOpenAI(payload);
+      const reply = await callOpenAI(payload, targetLang);
       if (!reply) {
         log('warn', 'OpenAI returned empty reply', { messageId: message.id });
         return;

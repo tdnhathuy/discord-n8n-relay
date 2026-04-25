@@ -1,6 +1,9 @@
 require('dotenv').config();
 
 const http = require('node:http');
+const https = require('node:https');
+
+const httpsAgent = new https.Agent({ keepAlive: true });
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
 
 const env = {
@@ -74,36 +77,11 @@ async function getReplyReference(message) {
 }
 
 function buildOpenAIPrompt({ content, username, replyToText, targetLang }) {
-  const rules = targetLang === 'vi'
-    ? [
-        '- Target language: Vietnamese.',
-        '- Translate the input text into natural Vietnamese.',
-        '- If the input is already Vietnamese, improve it to sound more natural and correct any spelling/grammar errors, suitable for a daily work chat among Vietnamese developers.',
-      ]
-    : [
-        '- Target language: English.',
-        '- Translate the input text into professional, natural English.',
-        '- If the input is already English (broken or not), correct the grammar and rewrite it to sound natural and native.',
-        '- Keep it concise, suitable for chatting with a PM, PO, designer, or teammate.',
-        '- Do not use contractions.',
-      ];
-
-  return [
-    'You are a professional bilingual writing assistant for software and product communication.',
-    '',
-    'Rules:',
-    ...rules,
-    '- Output only the final message.',
-    '- No explanations, no notes, no quotes, no markdown wrappers unless formatting code.',
-    '- Preserve intent, urgency, and speaker perspective exactly.',
-    '- Keep technical terms natural and unchanged when appropriate: API, UI, endpoint, PR, bug, staging, production, payload, response, config.',
-    '- Preserve identifiers, code, paths, URLs, emails, commands, and error text exactly when present.',
-    '- Do not add greetings or sign-offs unless they already exist in the source.',
-    '',
-    'Optional context:',
-    `reply_to: ${replyToText || ''}`,
-    `username: ${username || ''}`,
-  ].join('\n');
+  if (targetLang === 'vi') {
+    return 'Translate to Vietnamese. If already Vietnamese, fix grammar to sound natural. ONLY output the final text. No explanations. No quotes.';
+  } else {
+    return 'Translate to professional English. If already English, fix grammar. Keep IT terms intact. ONLY output the final text. No explanations. No quotes.';
+  }
 }
 
 function extractOpenAIText(data) {
@@ -130,6 +108,7 @@ async function callOpenAI(payload, targetLang) {
 
   const url = `${env.openaiApiBaseUrl.replace(/\/$/, '')}/chat/completions`;
   const response = await fetch(url, {
+    agent: url.startsWith('https') ? httpsAgent : undefined,
     method: 'POST',
     headers: { 
       'content-type': 'application/json',
@@ -142,7 +121,7 @@ async function callOpenAI(payload, targetLang) {
         { role: 'user', content: payload.content }
       ],
       temperature: 0,
-      max_tokens: 500,
+      max_tokens: 250,
       stream: false,
     }),
     signal: AbortSignal.timeout(env.requestTimeoutMs),

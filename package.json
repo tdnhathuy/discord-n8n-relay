@@ -2,7 +2,7 @@
   "name": "discord-n8n-relay",
   "version": "0.1.0",
   "private": true,
-  "description": "Discord relay bot that forwards messages to an n8n webhook and replies with the workflow result",
+  "description": "Discord relay bot that rewrites messages with Gemini and replies directly in Discord",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {

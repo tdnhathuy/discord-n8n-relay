@@ -121,7 +121,7 @@ async function callOpenAI(payload, targetLang) {
         { role: 'user', content: payload.content }
       ],
       temperature: 0,
-      max_tokens: 250,
+      max_tokens: 2048,
       stream: false,
     }),
     signal: AbortSignal.timeout(env.requestTimeoutMs),

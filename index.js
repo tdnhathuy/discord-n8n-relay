@@ -46,7 +46,10 @@ function shouldProcess(message) {
 }
 
 function parseMessage(content) {
-  const text = content.trim();
+  if (content === '/clear') return { isClearCommand: true };
+  const text = content ? content.trim() : '';
+  if (!text) return { targetLang: 'en', textToProcess: '' };
+  
   if (text.toLowerCase().startsWith('vi ')) {
     return { targetLang: 'vi', textToProcess: text.slice(3).trim() };
   }
@@ -77,11 +80,30 @@ async function getReplyReference(message) {
 }
 
 function buildOpenAIPrompt({ content, username, replyToText, targetLang }) {
-  if (targetLang === 'vi') {
-    return 'Translate to Vietnamese. If already Vietnamese, fix grammar to sound natural. ONLY output the final text. No explanations. No quotes.';
-  } else {
-    return 'Translate to professional English. If already English, fix grammar. Keep IT terms intact. ONLY output the final text. No explanations. No quotes.';
-  }
+  const rules = targetLang === 'vi'
+    ? [
+        '- Target language: Vietnamese.',
+        '- Translate the input text into natural Vietnamese.',
+        '- If the input is already Vietnamese, improve it to sound more natural and correct any spelling/grammar errors, suitable for a daily work chat among Vietnamese developers.',
+      ]
+    : [
+        '- Target language: English.',
+        '- Translate the input text into professional, natural English.',
+        '- If the input is already English (broken or not), correct the grammar and rewrite it to sound natural and native.',
+        '- Keep it concise, suitable for chatting with a PM, PO, designer, or teammate.',
+        '- Do not use contractions.',
+      ];
+
+  return [
+    'You are a professional bilingual writing assistant for software and product communication.',
+    '',
+    'Rules:',
+    ...rules,
+    '- Output only the final message.',
+    '- Maintain IT and technical terms in English (e.g. API, deploy, server, frontend) unless there is a very common Vietnamese equivalent.',
+    '- Never enclose the final output in quotes or markdown code blocks.',
+    '- Do not provide explanations, notes, or acknowledge the request.',
+  ].join('\n');
 }
 
 function extractOpenAIText(data) {
@@ -177,13 +199,58 @@ async function main() {
     partials: [Partials.Channel],
   });
 
-  client.once('ready', () => {
+  client.once('ready', async () => {
     log('info', `Discord bot logged in as ${client.user?.tag || 'unknown-user'}`);
+    try {
+      // Register global slash commands
+      await client.application.commands.set([
+        {
+          name: 'clear',
+          description: 'Xoá tối đa 100 tin nhắn gần nhất trong channel (không quá 14 ngày)',
+        }
+      ]);
+      log('info', 'Successfully registered slash commands.');
+    } catch (error) {
+      log('error', 'Failed to register slash commands', error.message);
+    }
+  });
+
+  client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    if (interaction.commandName === 'clear') {
+      log('info', 'Executing /clear slash command', { channelId: interaction.channelId });
+      // Tell Discord we are working on it so it doesn't timeout
+      await interaction.deferReply({ ephemeral: true });
+      
+      try {
+        const messages = await interaction.channel.messages.fetch({ limit: 100 });
+        await interaction.channel.bulkDelete(messages);
+        await interaction.editReply('✅ Đã dọn dẹp tin nhắn cũ.');
+      } catch (err) {
+        log('error', 'Failed to clear messages via slash command', err.message);
+        await interaction.editReply('❌ Lỗi khi xoá tin nhắn. (Lưu ý: bot không thể xoá tin nhắn cũ hơn 14 ngày).');
+      }
+    }
   });
 
   client.on('messageCreate', async (message) => {
     try {
       if (!shouldProcess(message)) return;
+
+            if (message.content === '/clear') {
+        log('info', 'Executing /clear command', { channelId: message.channelId });
+        try {
+          const messages = await message.channel.messages.fetch({ limit: 100 });
+          await message.channel.bulkDelete(messages);
+          const reply = await message.channel.send('✅ Đã dọn dẹp tin nhắn cũ.');
+          setTimeout(() => reply.delete().catch(() => {}), 3000);
+        } catch (err) {
+          log('error', 'Failed to clear messages', err.message);
+          await message.reply('❌ Lỗi khi xoá tin nhắn. (Lưu ý: bot không thể xoá tin nhắn cũ hơn 14 ngày).');
+        }
+        return;
+      }
 
       const { targetLang, textToProcess } = parseMessage(message.content);
       if (!textToProcess) return;
@@ -223,10 +290,7 @@ async function main() {
         return;
       }
 
-      const formattedReply = `**🌍 Auto ➔ ${targetLang.toUpperCase()}** | 🤖 \`${env.openaiModel}\` | ⏱️ \`${duration}s\`
-\`\`\`text
-${replyText}
-\`\`\``;
+      const formattedReply = `\n🤖 \`${env.openaiModel}\` | ⏱️ \`${duration}s\`\n\n\`\`\`text\n${replyText}\n\`\`\``;
 
       await sendReply(message, formattedReply);
     } catch (error) {
